@@ -56,5 +56,6 @@ CodeCoverage/
 TestResult.xml
 nunit-*.xml
 
-# Research data
-/Research/
+# Research transient data
+/Research/workspaces/
+/Research/logs/

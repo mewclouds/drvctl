@@ -2,7 +2,7 @@ namespace DrvCtl.Cli;
 
 internal static class HelpText
 {
-    internal const string Version = "1.0.0";
+    internal const string Version = "<REPLACE.VERSION>";
 
     internal static void PrintGeneral()
     {

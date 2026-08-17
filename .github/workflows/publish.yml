@@ -1,0 +1,76 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - '[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and release (e.g. 2026.08.17-rc1)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+
+    steps:
+      - name: Resolve tag
+        id: tag
+        shell: pwsh
+        run: |
+          $tag = if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            '${{ inputs.tag }}'
+          } else {
+            '${{ github.ref_name }}'
+          }
+          "value=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          $prerelease = ($tag -match '-').ToString().ToLower()
+          "prerelease=$prerelease" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - uses: actions/checkout@v7
+        with:
+          lfs: true
+          ref: ${{ steps.tag.outputs.value }}
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Stamp version
+        shell: pwsh
+        run: |
+          $tag = '${{ steps.tag.outputs.value }}'
+          $file = 'src\drvctl\Cli\HelpText.cs'
+          (Get-Content $file -Raw) -replace '<REPLACE\.VERSION>', $tag | Set-Content $file -NoNewline
+
+      - name: Publish Native AOT
+        run: dotnet publish drvctl.csproj -c Release -r win-x64
+
+      - name: Stage and zip artifact
+        id: zip
+        shell: pwsh
+        run: |
+          $tag = '${{ steps.tag.outputs.value }}'
+          $publishDir = 'bin\Release\net10.0-windows\win-x64\publish'
+          Copy-Item native\libwim-15.dll $publishDir\
+          $zipName = "drvctl-$tag-win-x64.zip"
+          Compress-Archive -Path $publishDir\* -DestinationPath $zipName
+          "name=$zipName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Create GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = '${{ steps.tag.outputs.value }}'
+          $zip = '${{ steps.zip.outputs.name }}'
+          $prerelease = '${{ steps.tag.outputs.prerelease }}' -eq 'true'
+          $ghArgs = @('release', 'create', $tag, $zip,
+                      '--title', "drvctl $tag",
+                      '--notes', '')
+          if ($prerelease) { $ghArgs += '--prerelease' }
+          gh @ghArgs
