@@ -332,7 +332,7 @@ internal sealed class DismVerificationRunner(
             "===================================================="
         );
         Console.WriteLine(
-            " drvctl 1.0.0 verify"
+            $" drvctl {HelpText.Version} verify"
         );
         Console.WriteLine(
             "===================================================="

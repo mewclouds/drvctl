@@ -1,3 +1,4 @@
+using DrvCtl.Cli;
 using DrvCtl.Export;
 
 namespace DrvCtl.Utilities;
@@ -17,7 +18,7 @@ internal static class ConsoleOutput
             "===================================================="
         );
         Console.WriteLine(
-            " drvctl 1.0.0"
+            $" drvctl {HelpText.Version}"
         );
         Console.WriteLine(
             "===================================================="
