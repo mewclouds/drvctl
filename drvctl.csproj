@@ -8,6 +8,12 @@
     <AssemblyName>drvctl</AssemblyName>
     <RootNamespace>DrvCtl</RootNamespace>
 
+    <!-- Overridden by CI release builds via -p:Version and -p:InformationalVersion.
+         Local/dev builds keep this placeholder so the help output always shows a valid version. -->
+    <Version>0.0.0-dev</Version>
+    <InformationalVersion>0.0.0-dev</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -25,6 +31,7 @@
 
   <ItemGroup>
     <Compile Remove="Research\Task9\Task9HiveEditor\**\*.cs" />
+    <Compile Remove="Research\Task15\Task15SetupApiProbe\**\*.cs" />
   </ItemGroup>
 
 </Project>

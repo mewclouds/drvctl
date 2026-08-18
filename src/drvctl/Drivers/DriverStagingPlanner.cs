@@ -1,5 +1,13 @@
+/*
+ * Backs the hidden `plan-driver` research command. Derives what an INF's
+ * copy and service directives would resolve to on a running system, without
+ * actually installing anything. The UnresolvedOperations list below is the
+ * honest inventory of what publication behavior this planner does not model.
+ */
+
 namespace DrvCtl.Drivers;
 
+/// Builds a DriverStagingPlan from a single driver package directory.
 internal sealed class DriverStagingPlanner
 {
     private const int DriversDirectoryId = 12;
@@ -22,6 +30,8 @@ internal sealed class DriverStagingPlanner
         "ConfigScope"
     ];
 
+    /// <exception cref="DirectoryNotFoundException">The package directory does not exist.</exception>
+    /// <exception cref="InvalidOperationException">The directory does not contain exactly one INF.</exception>
     internal DriverStagingPlan Create(string packageDirectory)
     {
         string directory = Path.GetFullPath(packageDirectory);
@@ -75,6 +85,9 @@ internal sealed class DriverStagingPlanner
             [.. UnresolvedOperations]);
     }
 
+    /// Maps a DestinationDirs directory ID to the well-known Windows path it
+    /// represents. Only the IDs actually seen in driver INFs are handled
+    /// (10/11/12/13, plus the legacy 16425 alias for the drivers directory).
     private static string ResolveDestination(InfCopyOperation copy)
     {
         string root = copy.DestinationDirectoryId switch
@@ -90,6 +103,10 @@ internal sealed class DriverStagingPlanner
             : Path.Combine(root, copy.DestinationSubdirectory, copy.DestinationFile);
     }
 
+    /// Normalizes a ServiceBinary field (which may use %11%/%12% path
+    /// substitution, an already-qualified \SystemRoot path, or a bare
+    /// filename) to the \SystemRoot-qualified form the service control
+    /// manager would actually store.
     private static string ResolveServiceBinary(string value)
     {
         if (value.StartsWith("%12%", StringComparison.OrdinalIgnoreCase))

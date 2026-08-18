@@ -1,9 +1,17 @@
+/*
+ * A single open key within an offline registry hive. Every enumeration and
+ * value read here follows the same Win32 buffer-growth pattern: call with a
+ * guessed buffer size, and on ERROR_MORE_DATA retry with the size the API
+ * reported.
+ */
+
 using System.Text;
 using System.Buffers.Binary;
 using DrvCtl.Native;
 
 namespace DrvCtl.Registry;
 
+/// An open key handle within an <see cref="OfflineRegistryHive"/>.
 internal sealed class OfflineRegistryKey : IDisposable
 {
     private const uint ErrorNoMoreItems = 259;
@@ -75,6 +83,9 @@ internal sealed class OfflineRegistryKey : IDisposable
 
     internal void DeleteSubKey(string name) => OfflineRegistryHive.ThrowIfFailed(OffregNative.DeleteKey(handle, name), "ORDeleteKey");
 
+    /// Recursively deletes a subkey and everything under it. offreg's
+    /// ORDeleteKey only removes a leaf key, so children must be walked and
+    /// deleted first.
     internal void DeleteSubKeyTree(string name)
     {
         using (OfflineRegistryKey child = OpenKey(name))
@@ -114,4 +125,5 @@ internal sealed class OfflineRegistryKey : IDisposable
     public void Dispose() => handle.Dispose();
 }
 
+/// A registry value's raw form: name, REG_* type code, and undecoded bytes.
 internal sealed record OfflineRegistryValue(string Name, uint Type, byte[] Data);

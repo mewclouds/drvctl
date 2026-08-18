@@ -1,3 +1,10 @@
+/*
+ * libwim (wimlib) declarations. The library binary (native\libwim-15.dll)
+ * ships alongside drvctl rather than relying on anything already present on
+ * the target machine, since WIM manipulation is research-only functionality
+ * with no guaranteed system-provided equivalent.
+ */
+
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
@@ -7,6 +14,8 @@ internal static partial class WimlibNative
 {
     internal const string LibraryName = "libwim-15.dll";
 
+    /// Mirrors struct wimlib_wim_info. The trailing Reserved array pads the
+    /// struct to match wimlib's ABI, callers never read it.
     [StructLayout(LayoutKind.Sequential)]
     internal unsafe struct WimInfo
     {
@@ -51,6 +60,8 @@ internal static partial class WimlibNative
     internal static partial int Overwrite(SafeWimHandle handle, int writeFlags, uint numThreads);
 }
 
+/// SafeHandle around an open wimlib WIMStruct pointer. wimlib_free has no
+/// failure return, so ReleaseHandle always reports success.
 internal sealed class SafeWimHandle : SafeHandleZeroOrMinusOneIsInvalid
 {
     private SafeWimHandle() : base(true) { }

@@ -1,11 +1,23 @@
+/*
+ * setupapi.dll declarations. This is the primary native surface for both the
+ * public list/export commands (via DriverStoreResolver, which calls
+ * SetupGetInfDriverStoreLocationW) and the research INF inspector
+ * (InfInspector, which walks INF sections directly). All string-taking
+ * entry points use the W (wide/UTF-16) export explicitly.
+ */
+
 using System.Runtime.InteropServices;
 
 namespace DrvCtl.Native;
 
 internal static partial class SetupApiNative
 {
+    /// SetupOpenInfFileW's documented invalid-handle sentinel. Not IntPtr.Zero.
     internal static readonly nint InvalidInfHandle = -1;
 
+    /// Opaque cursor into an open INF's current line, produced and consumed
+    /// by the SetupFindFirstLine/SetupFindNextLine family. Callers never read
+    /// its fields directly, only pass it back to further SetupApi calls.
     [StructLayout(LayoutKind.Sequential)]
     internal struct InfContext
     {
@@ -15,6 +27,10 @@ internal static partial class SetupApiNative
         internal uint Line;
     }
 
+    /// Mirrors SP_ALTPLATFORM_INFO_V2, used to force AMD64-specific section
+    /// resolution regardless of what architecture drvctl itself is running
+    /// on. Size must be set to sizeof(AlternatePlatformInfo) before the call,
+    /// SetupAPI uses it to distinguish this from the older V1 struct shape.
     [StructLayout(LayoutKind.Sequential)]
     internal struct AlternatePlatformInfo
     {
@@ -59,6 +75,10 @@ internal static partial class SetupApiNative
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static unsafe partial bool SetupDiGetActualSectionToInstallExW(nint infHandle, string infSectionName, nint alternatePlatformInfo, char* infSectionWithExt, uint infSectionWithExtSize, out uint requiredSize, out nint extension, nint reserved);
 
+    /// The one entry point the public export/list surface depends on: maps a
+    /// published OEM INF name to its backing Driver Store package INF path.
+    /// Returns a Win32 BOOL-as-int (nonzero success), with the actual buffer
+    /// growth handled by DriverStoreResolver.ResolveStoreInf.
     [LibraryImport(
         "setupapi.dll",
         EntryPoint = "SetupGetInfDriverStoreLocationW",
@@ -74,6 +94,12 @@ internal static partial class SetupApiNative
         out uint requiredSize
     );
 
+    /// Mirrors SP_INF_SIGNER_INFO_V2. CbSize must be set before the call so
+    /// SetupVerifyInfFile knows this is the V2 (not V1) struct shape. The
+    /// three MAX_PATH (260) fixed-size string buffers are why this uses
+    /// classic [DllImport]/[MarshalAs(ByValTStr)] below instead of
+    /// [LibraryImport]: the source-generated marshaller does not support
+    /// fixed-size inline string buffers.
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     internal struct SpInfSignerInfoV2
     {
@@ -87,6 +113,8 @@ internal static partial class SetupApiNative
         internal uint SignerScore;
     }
 
+    /// Reads the catalog and signer identity SetupAPI itself would use to
+    /// validate the INF's signature. See SpInfSignerInfoV2 for why this stays on DllImport.
     [DllImport("setupapi.dll", EntryPoint = "SetupVerifyInfFileW", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool SetupVerifyInfFile(string infName, nint altPlatformInfo, ref SpInfSignerInfoV2 infSignerInfo);

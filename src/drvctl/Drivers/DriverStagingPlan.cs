@@ -1,5 +1,14 @@
+/*
+ * Result shapes for DriverStagingPlanner, backing the hidden `plan-driver`
+ * research command. Represents what drvctl can currently determine about
+ * how a driver package would install, split explicitly from what remains
+ * UnresolvedOperations so the gap is visible rather than guessed at.
+ */
+
 namespace DrvCtl.Drivers;
 
+/// A driver package's install plan as far as drvctl can currently determine
+/// it, plus the list of operations that remain unresolved research questions.
 internal sealed record DriverStagingPlan(
     DriverPackagePlan Package,
     StoreFilePlan[] StoreFiles,

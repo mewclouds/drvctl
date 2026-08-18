@@ -1,9 +1,18 @@
+/*
+ * Reads INF files through SetupAPI instead of parsing them by hand. Windows
+ * already knows how to walk decorated section names (Install.NTamd64), field
+ * indirection, and %strkey% substitution correctly, so drvctl asks it rather
+ * than reimplementing INF grammar.
+ */
+
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using DrvCtl.Native;
 
 namespace DrvCtl.Drivers;
 
+/// Parses a single INF file via SetupAPI. Hardcoded to the AMD64 platform
+/// (see GetActualSection), matching the only architecture drvctl targets.
 internal sealed class InfInspector
 {
     private const uint InfStyleWin4 = 2;
@@ -11,6 +20,41 @@ internal sealed class InfInspector
     private const uint PlatformWin32Nt = 2;
     private const ushort ProcessorArchitectureAmd64 = 9;
 
+    /// Reads only the Version-section identity fields (Class/Provider/DriverVer/CatalogFile).
+    /// Much cheaper than Inspect(), which also walks models, copy operations, and services.
+    internal InfIdentity InspectIdentity(string path)
+    {
+        string fullPath = Path.GetFullPath(path);
+        nint inf = SetupApiNative.SetupOpenInfFileW(fullPath, null, InfStyleWin4, out uint errorLine);
+        if (inf == SetupApiNative.InvalidInfHandle)
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), $"SetupOpenInfFileW failed at INF line {errorLine}");
+        }
+
+        try
+        {
+            string? driverDate = null;
+            string? driverVersion = null;
+            if (SetupApiNative.SetupFindFirstLineW(inf, "Version", "DriverVer", out SetupApiNative.InfContext context))
+            {
+                driverDate = ReadField(ref context, 1);
+                driverVersion = ReadField(ref context, 2);
+            }
+
+            return new InfIdentity(
+                ReadFirstField(inf, "Version", "Class", 1),
+                ReadFirstField(inf, "Version", "ClassGuid", 1),
+                ReadFirstField(inf, "Version", "Provider", 1),
+                driverDate,
+                driverVersion,
+                ReadFirstField(inf, "Version", "CatalogFile", 1));
+        }
+        finally { SetupApiNative.SetupCloseInfFile(inf); }
+    }
+
+    /// Full parse: identity, decorated AMD64 install sections, models,
+    /// copy/service directives, and the signing catalog SetupVerifyInfFile reports.
+    /// <exception cref="Win32Exception">SetupOpenInfFileW failed to open or parse the INF.</exception>
     internal InfInspection Inspect(string path)
     {
         string fullPath = Path.GetFullPath(path);
@@ -263,6 +307,11 @@ internal sealed class InfInspector
         context = next; return true;
     }
 
+    /// Reads one INF field as a string, already resolving %strkey%
+    /// indirection since that is what SetupGetStringFieldW does natively.
+    /// Grows the buffer and retries on ERROR_INSUFFICIENT_BUFFER. Returns
+    /// null (not a thrown exception) when the field simply does not exist,
+    /// which callers rely on to treat missing fields as absent, not fatal.
     private static unsafe string? ReadField(ref SetupApiNative.InfContext context, uint field)
     {
         char[] buffer = new char[256];
@@ -278,6 +327,11 @@ internal sealed class InfInspector
         }
     }
 
+    /// Resolves a base section name (e.g. "Install") to its decorated
+    /// platform-specific form (e.g. "Install.NTamd64.6.0") via
+    /// SetupDiGetActualSectionToInstallExW, which applies the same
+    /// decoration precedence rules the real installer uses. Growing the
+    /// buffer on ERROR_INSUFFICIENT_BUFFER follows the same pattern as ReadField.
     private static unsafe string GetActualSection(nint inf, string section)
     {
         char[] buffer = new char[256];

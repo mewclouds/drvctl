@@ -1,12 +1,21 @@
+/*
+ * The plain export pipeline: resolve published packages, stage a copy plan,
+ * copy in parallel, then atomically commit. This is the only place that
+ * touches the copy path. Verification and DISM comparison are separate
+ * concerns layered on afterward by the CLI, not by this class.
+ */
+
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
 using DrvCtl.Copy;
+using DrvCtl.Core;
 using DrvCtl.Drivers;
 using DrvCtl.Utilities;
 
 namespace DrvCtl.Export;
 
+/// Default <see cref="IDriverExporter"/> implementation.
 internal sealed class DriverExporter(
     DriverStoreResolver resolver,
     ICopyEngine copyEngine
@@ -14,6 +23,9 @@ internal sealed class DriverExporter(
 {
     private const int MaxReportedCopyFailures = 8;
 
+    /// <inheritdoc/>
+    /// <exception cref="InvalidOperationException">The destination is unsafe, or package resolution failed.</exception>
+    /// <exception cref="IOException">One or more files could not be copied. The incomplete export is removed.</exception>
     public ExportResult Export(
         ExportRequest request
     )
@@ -36,23 +48,35 @@ internal sealed class DriverExporter(
 
         resolveWatch.Stop();
 
-        ConsoleOutput.PrintExportHeader(
-            destination.Destination,
-            resolution.PublishedInfCount,
-            resolution.PackageDirectories.Length,
-            request.Workers,
-            copyEngine.Name
+        Console.WriteLine();
+        Console.WriteLine(
+            $"Exporting {resolution.PackageDirectories.Length} driver package" +
+            (resolution.PackageDirectories.Length == 1 ? string.Empty : "s") +
+            $" to {destination.Destination}"
         );
+
+        if (request.Verbose)
+        {
+            ConsoleOutput.PrintExportHeader(
+                resolution.PublishedInfCount,
+                resolution.PackageDirectories.Length,
+                new WorkerSelection(request.Workers, request.WorkersFromOverride),
+                copyEngine.Name
+            );
+        }
 
         using StagingDirectory staging =
             StagingDirectory.Create(
                 destination.Parent
             );
 
-        Console.WriteLine();
-        Console.WriteLine(
-            "Exporting driver packages..."
-        );
+        if (request.Verbose)
+        {
+            Console.WriteLine();
+            Console.WriteLine(
+                "Building copy plan..."
+            );
+        }
 
         Stopwatch treeWatch =
             Stopwatch.StartNew();
@@ -68,6 +92,13 @@ internal sealed class DriverExporter(
         );
 
         treeWatch.Stop();
+
+        if (request.Verbose)
+        {
+            Console.WriteLine(
+                "Copying files..."
+            );
+        }
 
         Stopwatch copyWatch =
             Stopwatch.StartNew();
@@ -98,10 +129,14 @@ internal sealed class DriverExporter(
             resolveWatch.Elapsed.TotalSeconds,
             treeWatch.Elapsed.TotalSeconds,
             copyWatch.Elapsed.TotalSeconds,
-            endToEnd.Elapsed.TotalSeconds
+            endToEnd.Elapsed.TotalSeconds,
+            resolution.PackageDirectories
         );
     }
 
+    /// Mirrors each package directory's structure under the staging root and
+    /// appends one CopyJob per file. Directories are created up front so the
+    /// parallel copy phase never races on directory creation.
     private static void BuildCopyPlan(
         string[] packageDirectories,
         string stagingRoot,
@@ -197,6 +232,11 @@ internal sealed class DriverExporter(
         }
     }
 
+    /// Copies every job with the requested worker count. Stops issuing new
+    /// copies as soon as one fails (ParallelLoopState.Stop), because a
+    /// partially copied export is going to be deleted anyway. Collects up to
+    /// MaxReportedCopyFailures failures for the error message rather than
+    /// flooding the console if many files fail at once.
     private void CopyJobs(
         List<CopyJob> jobs,
         int workers

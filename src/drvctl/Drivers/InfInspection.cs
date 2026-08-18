@@ -1,5 +1,13 @@
+/*
+ * Result shapes for InfInspector. InfIdentity is shared with the public
+ * `list` command's identity lookup. The rest back the hidden `inspect-inf`
+ * and `plan-driver` research commands.
+ */
+
 namespace DrvCtl.Drivers;
 
+/// Full parse of a single INF file: identity, install sections, copy and
+/// service directives, models, and strings.
 internal sealed record InfInspection(
     string Path,
     string? Class,
@@ -21,6 +29,16 @@ internal sealed record InfInspection(
     InfStringValue[] Strings,
     int? PnpLockdown,
     InfSignatureInfo? Signature
+);
+
+/// Just the Version-section identity fields, the cheap subset InfInspector.InspectIdentity reads for `list`.
+internal sealed record InfIdentity(
+    string? Class,
+    string? ClassGuid,
+    string? Provider,
+    string? DriverDate,
+    string? DriverVersion,
+    string? CatalogFile
 );
 
 internal sealed record InfSignatureInfo(

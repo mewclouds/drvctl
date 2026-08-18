@@ -1,106 +1,85 @@
 # ROADMAP.md
 
-## Now
+## Production
 
-Finish Task 12.
+Shipped and supported today:
 
-Do not change publication behavior until the one-at-a-time compatibility sweep is done.
+- `list`, with `--verbose`, `--provider`, `--class`
+- `export`, with a friendly-by-default, `--verbose`-for-detail split
+- Quick confidence verification (`--verify`)
+- Expensive confidence verification (`--full-verify`)
+- Challenging DISM directly (`--dism`)
+- Automatic, independent copy and verification concurrency
+- CalVer release versioning through CI, with local dev builds carrying a
+  clear placeholder version
+- Native AOT, self-contained single-file publish
 
-The important output is:
+This is the mature, tested part of the project. Product work here can and
+does happen independently of the research track below.
 
-`package-compatibility.json`
+Possible next steps for the production surface, none of them committed:
 
-The current sweep should tell us:
+- driver-store diagnostics beyond `list`
+- richer `--verbose` detail where users have asked for it
+- packaging and distribution polish
 
-- what drvctl can already publish
-- what Windows recognizes
-- where semantic comparison diverges
-- which failure patterns repeat
+## Research
 
-## Immediately after Task 12
+Everything below is exploratory. It answers questions about how Windows
+driver servicing actually works. None of it is a production capability of
+the public CLI, and none of it should be described as one.
 
-### Audit the harness before trusting percentages
+### Solid enough to build on
 
-The raw package data is useful, but the current classification layer needs review.
+- Reading INF packages and Driver Store locations through SetupAPI, the same
+  machinery production `list`/`export` already depend on
+- Direct WIM manipulation through libwim
+- Direct offline registry hive manipulation through Offreg
 
-Before saying "X out of 67 pass":
+### Real, but narrow
 
-- check analyzer exit handling
-- replace hardcoded exact-match counts
-- tighten known-omission rules
-- separate unsupported packages from crashes
-- group failures by actual mechanism
-- verify recognition identity, provider, class, and version comparisons
+A single test driver (ACPIVPC) has been published directly into a copied
+WIM using the libwim and Offreg path, without invoking DISM, and Windows
+offline servicing recognized the resulting package identity, provider,
+class, version, hardware ID, and service before any DISM repair ran. That's
+a real result: it proves the direct-publication architecture can work end
+to end for at least one package. It does not prove general driver
+injection. A duplicate DISM add against the same image filled in state that
+the direct path had intentionally omitted, which is the current honest
+measure of the gap.
 
-Then regenerate the compatibility summary from the saved package artifacts.
+### Open and unresolved
 
-### Freeze the current research state
+- Whether the direct-publication result generalizes past ACPIVPC to other
+  driver classes and shapes
+- Full DriverDatabase field encoding
+- PnpLockdownFiles ownership encoding
+- Catalog database publication semantics
+- Full DeviceIds encoding
+- Whether "Windows recognizes it" implies PnP would actually match and
+  install the device, that's a separate, later claim this project has not tested
 
-Once the audit is done:
+### Compatibility sweep
 
-- update these docs
-- archive the final compatibility JSON/CSV
-- document recurring failure families
-- document the current supported package shapes
+A per-package compatibility harness exists to test the direct-publication
+path against many packages independently (fresh drvctl WIM, fresh DISM
+reference WIM, recognition check, semantic comparison, per-package result).
+Treat any current summary counts or pass percentages from that harness as
+provisional until the classification logic behind them has been reviewed.
+The raw per-package data is trustworthy, the rollup numbers on top of it may not be yet.
 
-## Next research phase
+### PnP phase
 
-Pick the highest-value failure family from the audited compatibility matrix.
-
-Good priorities are:
-
-1. failures that prevent Windows recognition
-2. one missing rule affecting many packages
-3. shared behavior across a driver class
-4. behavior needed for eventual PnP correctness
-
-Do not pick the next task because one package looks interesting if another failure affects ten packages.
-
-## Likely future families
-
-These are possibilities, not commitments:
-
-- richer SoftwareComponent registry behavior
-- AddReg and vendor configuration
-- shared service ownership
-- Version-tail variants
-- DeviceIds
-- unsupported destination directory behavior
-- localized metadata
-- extension/component-specific state
-
-Task 12 decides which ones actually matter.
-
-## PnP phase
-
-PnP testing comes after offline servicing behavior is stable enough to make the result meaningful.
-
-This phase needs to answer:
-
-- what DeviceIds really encode
-- whether hardware matching works
-- whether services and dependencies activate correctly
-- whether a booted image behaves like the DISM-serviced reference
-
-## Product work can happen in parallel
-
-The read-only side does not need to wait for injection research.
-
-Good product-facing targets:
-
-- list
-- export
-- verify
-- inspect INF
-- inspect WIM
-- compare package state
-- benchmark
-- driver-store diagnostics
+Comes after offline servicing recognition is well understood enough for a
+PnP result to mean something. Open questions for that phase: what DeviceIds
+actually encode, whether hardware matching works against a directly
+published package, whether services and dependencies activate correctly,
+and whether a booted image built this way behaves like a DISM-serviced one.
 
 ## Long-term direction
 
-Use native Windows APIs and libwim for the parts we understand.
-
-Keep DISM as the reference for the parts we still need to study.
-
-Replace it where the servicing stack adds cost without adding value.
+Keep using native Windows APIs and libwim for the parts of driver servicing
+this project actually understands. Keep DISM as the reference for the parts
+it doesn't yet. Move functionality out of the DISM-dependent research column
+and into the production column only once it's understood well enough to
+stand on its own, not because a prototype happened to work once.

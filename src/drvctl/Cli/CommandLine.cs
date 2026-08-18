@@ -1,10 +1,19 @@
+/*
+ * Argument parsing for every command, public and hidden research alike.
+ * Hidden here does not mean secret: research commands dispatch by exact
+ * name like any other, they are simply left out of HelpText so they never
+ * show up in `drvctl help` or tab completion. Nothing here enforces or
+ * checks that boundary, it's a documentation-and-help-text convention, not a
+ * security mechanism.
+ */
+
 namespace DrvCtl.Cli;
 
 internal static class CommandLine
 {
-    private const int MinWorkers = 1;
-    private const int MaxWorkers = 4;
-
+    /// Parses the full argument vector into a CommandOptions. The first
+    /// token selects the command, everything after it is command-specific.
+    /// <exception cref="UsageException">No command was given, the command is unknown, or its arguments are malformed.</exception>
     internal static CommandOptions Parse(string[] args)
     {
         if (args.Length == 0)
@@ -21,9 +30,6 @@ internal static class CommandLine
         {
             "export" =>
                 ParseExport(args[1..]),
-
-            "verify" =>
-                ParseVerify(args[1..]),
 
             "list" =>
                 ParseList(args[1..]),
@@ -166,13 +172,15 @@ internal static class CommandLine
         return create(args[0]);
     }
 
+    /// Parses `export <path> [--verify|--full-verify|--dism] [--verbose] [--benchmark]`.
     private static ExportCommandOptions ParseExport(
         string[] args
     )
     {
         string? destination = null;
-        int? workers = null;
         bool benchmark = false;
+        bool verbose = false;
+        ExportValidationMode? validationMode = null;
 
         for (int index = 0; index < args.Length;)
         {
@@ -190,14 +198,31 @@ internal static class CommandLine
                 continue;
             }
 
-            if (IsOption(argument, "--workers", "-workers"))
+            if (IsOption(argument, "--verbose", "-verbose"))
             {
-                workers =
-                    ParseWorkers(
-                        args,
-                        ref index
-                    );
+                verbose = true;
+                index++;
+                continue;
+            }
 
+            if (IsOption(argument, "--verify", "-verify"))
+            {
+                SetValidationMode(ref validationMode, ExportValidationMode.Quick);
+                index++;
+                continue;
+            }
+
+            if (IsOption(argument, "--full-verify", "-fullverify"))
+            {
+                SetValidationMode(ref validationMode, ExportValidationMode.Full);
+                index++;
+                continue;
+            }
+
+            if (IsOption(argument, "--dism", "-dism"))
+            {
+                SetValidationMode(ref validationMode, ExportValidationMode.Dism);
+                index++;
                 continue;
             }
 
@@ -228,92 +253,38 @@ internal static class CommandLine
 
         return new ExportCommandOptions(
             destination,
-            workers,
-            benchmark
+            benchmark,
+            verbose,
+            validationMode ?? ExportValidationMode.None
         );
     }
 
-    private static VerifyCommandOptions ParseVerify(
-        string[] args
+    /// Enforces that --verify, --full-verify, and --dism are mutually
+    /// exclusive. Passing the same flag twice is allowed, since that is not
+    /// actually a conflict.
+    private static void SetValidationMode(
+        ref ExportValidationMode? mode,
+        ExportValidationMode requested
     )
     {
-        string? destination = null;
-        int? workers = null;
-        bool benchmark = false;
-        bool flushCache = false;
-
-        for (int index = 0; index < args.Length;)
-        {
-            string argument = args[index];
-
-            if (IsHelp(argument))
-            {
-                return HelpForVerify();
-            }
-
-            if (IsOption(argument, "--benchmark", "-benchmark"))
-            {
-                benchmark = true;
-                index++;
-                continue;
-            }
-
-            if (IsOption(argument, "--flush-cache", "-flushcache"))
-            {
-                flushCache = true;
-                index++;
-                continue;
-            }
-
-            if (IsOption(argument, "--workers", "-workers"))
-            {
-                workers =
-                    ParseWorkers(
-                        args,
-                        ref index
-                    );
-
-                continue;
-            }
-
-            if (argument.StartsWith('-'))
-            {
-                throw new UsageException(
-                    $"Unknown verify option: {argument}"
-                );
-            }
-
-            if (destination is not null)
-            {
-                throw new UsageException(
-                    $"Unexpected verify argument: {argument}"
-                );
-            }
-
-            destination = argument;
-            index++;
-        }
-
-        if (string.IsNullOrWhiteSpace(destination))
+        if (mode.HasValue && mode.Value != requested)
         {
             throw new UsageException(
-                "verify requires a destination path."
+                "Choose only one validation mode: --verify, --full-verify, or --dism."
             );
         }
 
-        return new VerifyCommandOptions(
-            destination,
-            workers,
-            benchmark,
-            flushCache
-        );
+        mode = requested;
     }
 
+    /// Parses `list [--verbose] [--provider <text>] [--class <text>]`.
     private static ListCommandOptions ParseList(
         string[] args
     )
     {
-        int? workers = null;
+        bool verbose = false;
+        string? providerFilter = null;
+        string? classFilter = null;
 
         for (int index = 0; index < args.Length;)
         {
@@ -324,12 +295,32 @@ internal static class CommandLine
                 return HelpForList();
             }
 
-            if (IsOption(argument, "--workers", "-workers"))
+            if (IsOption(argument, "--verbose", "-verbose"))
             {
-                workers =
-                    ParseWorkers(
+                verbose = true;
+                index++;
+                continue;
+            }
+
+            if (IsOption(argument, "--provider", "-provider"))
+            {
+                providerFilter =
+                    RequireValue(
                         args,
-                        ref index
+                        ref index,
+                        argument
+                    );
+
+                continue;
+            }
+
+            if (IsOption(argument, "--class", "-class"))
+            {
+                classFilter =
+                    RequireValue(
+                        args,
+                        ref index,
+                        argument
                     );
 
                 continue;
@@ -347,45 +338,34 @@ internal static class CommandLine
             );
         }
 
-        return new ListCommandOptions(workers);
+        return new ListCommandOptions(
+            verbose,
+            providerFilter,
+            classFilter
+        );
     }
 
-    private static int ParseWorkers(
+    private static string RequireValue(
         string[] args,
-        ref int index
+        ref int index,
+        string optionName
     )
     {
         index++;
 
-        if (index >= args.Length)
-        {
-            throw new UsageException(
-                "--workers requires a number from 1 through 4."
-            );
-        }
-
-        if (!int.TryParse(
-            args[index],
-            out int workers
-        ))
-        {
-            throw new UsageException(
-                "--workers must be a number from 1 through 4."
-            );
-        }
-
         if (
-            workers < MinWorkers ||
-            workers > MaxWorkers
+            index >= args.Length ||
+            string.IsNullOrWhiteSpace(args[index])
         )
         {
             throw new UsageException(
-                "--workers must be between 1 and 4."
+                $"{optionName} requires a value."
             );
         }
 
+        string value = args[index];
         index++;
-        return workers;
+        return value;
     }
 
     private static bool IsOption(
@@ -429,17 +409,14 @@ internal static class CommandLine
         throw new CommandHelpException("export");
     }
 
-    private static VerifyCommandOptions HelpForVerify()
-    {
-        throw new CommandHelpException("verify");
-    }
-
     private static ListCommandOptions HelpForList()
     {
         throw new CommandHelpException("list");
     }
 }
 
+/// Thrown by `export --help` / `list --help` to print that command's own
+/// help text instead of falling through to the general usage error path.
 internal sealed class CommandHelpException(
     string command
 ) : Exception

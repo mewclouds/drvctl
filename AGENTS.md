@@ -2,125 +2,65 @@
 
 Read this before changing drvctl.
 
-This project is partly a normal Windows utility and partly reverse-engineering research. The read-only side is much more mature than driver injection.
+## Production vs research
 
-## The rule that matters most
+The supported public CLI is `drvctl export`, `drvctl list`, and `drvctl help`.
+That's it. Everything else (`inspect-inf`, `inspect-wim`, `plan-driver`,
+`validate-plan`, `simulate-apply`, `analyze-publication`,
+`prototype-publication`, `prototype-inject-wim`) is a hidden research
+command. It's dispatched by exact name in `Cli/CommandLine.cs` like any
+other command, it just has no entry in `Cli/HelpText.cs`, so it never shows
+up in `drvctl help`. Hidden from discovery does not mean secret, and it is
+not a security boundary. Do not add research commands to help text, and do
+not treat their absence from help as anything stronger than a filing decision.
 
-Do not guess Windows servicing behavior.
+## Behavioral facts to keep straight
 
-If we do not know why a value exists, how it is derived, or whether a rule generalizes, keep it marked unknown or unsupported.
+- Plain `export` never calls DISM.
+- `--verify` is metadata-only: file count, relative path, size. It does not hash.
+- `--full-verify` adds SHA-256 on top of `--verify`'s checks.
+- `--dism` creates a temporary DISM reference export and does a full
+  (count, path, size, SHA-256) comparison against it, then deletes the
+  temporary export. It is the only production path that touches DISM.
+- `--verify`, `--full-verify`, and `--dism` are mutually exclusive.
+- There is no public `--workers` flag. Copy and verification concurrency use
+  separate automatic policies (`CopyWorkerPolicy`, `VerificationWorkerPolicy`
+  in `Cli/DrvCtlApp.cs`) because copying and hashing behave differently
+  under load.
+- `DRVCTL_COPY_WORKERS` and `DRVCTL_VERIFY_WORKERS` are internal
+  research/benchmark environment overrides, not CLI options. Do not surface
+  them in end-user help or quick-start docs.
 
-Do not copy bytes from a DISM-generated fixture into implementation code just because it makes a diff disappear.
+## Working style
 
-## Read these first
+- Comments explain why, not what. If a comment restates the method name, delete it.
+- Do not guess undocumented Windows behavior. If we don't know why a value
+  exists or whether a rule generalizes, say so, don't bake in a plausible-looking assumption.
+- Use `fd` and `rg` instead of broad recursive scans, this is a real
+  codebase with a real build output directory, don't grep through `bin/` and `obj/`.
+- Native AOT is not optional for validating a change. `dotnet build` proves
+  the code compiles. It does not prove Native AOT will publish. Run
+  `dotnet publish .\drvctl.csproj -c Release -r win-x64` before calling a
+  change to native interop or trimming-sensitive code done.
+- If a parent or reviewer model is checking your work, native interop
+  changes (`src/drvctl/Native/*.cs`, anything touching `SafeHandle`
+  subclasses or struct layout) deserve a closer look than an ordinary diff.
+  Struct layout and marshalling mistakes here have caused real bugs before.
 
-Before changing publication or WIM code:
+## Fixture and workspace safety
 
-1. `SPEC.md`
-2. `ROADMAP.md`
-3. `docs/current-state.md`
-4. `docs/evidence-ledger.md`
-5. `docs/known-limitations.md`
-6. `docs/architecture/driver-publication.md`
-7. `docs/research/compatibility-method.md`
-8. the latest experiment notes
-9. `package-compatibility.json` once Task 12 finishes
+Research commands (`simulate-apply`, `analyze-publication`,
+`prototype-publication`, `prototype-inject-wim`) operate on copied WIMs and
+disposable workspaces. Never mutate a canonical baseline or reference WIM in
+place, and never use the live registry as a staging area for offline-image
+work. Use Offreg for offline hive access and libwim for direct WIM access,
+both already wrapped in `src/drvctl/Registry` and `src/drvctl/Images`.
 
-Then inspect the actual repository. These Phase A docs are based on the experiment history, not a fresh code audit.
+## Docs that matter here
 
-## Evidence labels
-
-Use these words consistently.
-
-- **Solved**: deterministic rule with strong validation
-- **PrototypeSupported**: works for a narrow tested case
-- **Observed**: seen in one or more experiments, rule still unknown
-- **Hypothesis**: plausible explanation that needs testing
-- **Unsupported**: behavior exists but drvctl does not know how to reproduce it
-- **Disproven**: tested idea did not hold
-
-Do not call something solved because it worked once.
-
-## Keep the milestones separate
-
-A driver can pass one layer and fail the next.
-
-1. WIM can be opened
-2. package files and registry state exist
-3. Windows offline servicing recognizes the package
-4. drvctl matches DISM semantics
-5. PnP can match/install it
-6. the driver works after boot
-
-Recognition is not PnP correctness.
-
-A package with semantic mismatches can still be recognized by Windows.
-
-## Fixture safety
-
-Never mutate the canonical baseline or reference WIMs in place.
-
-Do not modify:
-
-- live Driver Store
-- live CatRoot
-- live registry for offline experiments
-- source driver export under `C:\Drivers`
-
-Use copied WIMs and disposable workspaces.
-
-Use Offreg for offline hive work.
-
-Use libwim for direct WIM access.
-
-DISM is allowed in research as a reference, validator, and benchmark target.
-
-## Compatibility sweeps
-
-Do not fix publication logic while a compatibility sweep is running.
-
-Record the failure and continue.
-
-A harness bug may be fixed if it does not change publication semantics. Record the fix and rerun only affected packages.
-
-Task 12 exists to map the current implementation, not improve it mid-run.
-
-## Review before trusting reports
-
-Do not trust a summary count without checking how it was produced.
-
-The current Task 12 harness has a few known issues that require a post-sweep audit:
-
-- semantic mismatch classification is heuristic
-- some omission categories are too broad
-- exact-match count is hardcoded in the current harness
-- analyzer exit status needs stronger handling
-- failure fingerprints group by contradiction count rather than mechanism
-- unsupported package handling needs a proper distinction from execution failure
-
-The raw outputs are still useful. Reclassify them after the sweep.
-
-## When research changes our understanding
-
-Update:
-
-- `docs/evidence-ledger.md`
-- `docs/known-limitations.md`
-- the experiment note
-- `ROADMAP.md` if the next target changes
-
-Do not erase old wrong ideas. Mark them disproven.
-
-## Phase B documentation pass
-
-The next code-aware pass should verify:
-
-- current repository layout
-- current command names and help text
-- class and file names
-- build and publish commands
-- current report schemas
-- current test commands
-- which prototype rules are actually enabled
-
-Fix stale names and paths without weakening the evidence boundaries in these docs.
+- `README.md` for the end-user quick start
+- `PHILOSOPHY.md` for why drvctl is built this way
+- `ARCHITECTURE.md` for the technical map
+- `SPEC.md` for the exact production contract
+- `ROADMAP.md` for what's shipped versus what's still research
+- `docs/` for research methodology, experiment history, and deeper technical notes

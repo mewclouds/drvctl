@@ -1,9 +1,18 @@
+/*
+ * Cold-cache benchmarking utility. Not currently wired into any CLI command,
+ * production or research. Kept for future benchmark work that needs a real
+ * cold-cache baseline instead of the warm-cache caveat --dism --benchmark
+ * already prints.
+ */
+
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using DrvCtl.Native;
 
 namespace DrvCtl.Platform;
 
+/// Drops the Windows system file cache via SetSystemFileCacheSize, requiring
+/// and temporarily enabling SeIncreaseQuotaPrivilege to do so.
 internal sealed class CacheFlusher
 {
     private const uint TokenAdjustPrivileges = 0x0020;
@@ -17,6 +26,10 @@ internal sealed class CacheFlusher
 
     private const int SettleMilliseconds = 500;
 
+    /// Requests SeIncreaseQuotaPrivilege, calls SetSystemFileCacheSize to
+    /// evict the cache, then drops the privilege again. Requires an elevated
+    /// process, since the privilege is not held by default even for admins.
+    /// <exception cref="Win32Exception">Any step of the privilege or cache-size adjustment fails.</exception>
     internal void Flush()
     {
         nint token =

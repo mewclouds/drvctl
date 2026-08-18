@@ -31,6 +31,17 @@ jobs:
           $prerelease = ($tag -match '-').ToString().ToLower()
           "prerelease=$prerelease" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
+          # MSBuild's <Version> feeds AssemblyVersion/FileVersion and rejects
+          # leading zeros in numeric identifiers (the tag has zero-padded
+          # month/day, e.g. 2026.08.17-rc1). InformationalVersion has no such
+          # restriction, so it keeps the exact tag text for display.
+          if ($tag -match '^(\d+)\.(\d+)\.(\d+)(-.+)?$') {
+            $version = "$([int]$matches[1]).$([int]$matches[2]).$([int]$matches[3])$($matches[4])"
+          } else {
+            $version = $tag
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
       - uses: actions/checkout@v7
         with:
           lfs: true
@@ -40,15 +51,14 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Stamp version
+      - name: Publish Native AOT
         shell: pwsh
         run: |
           $tag = '${{ steps.tag.outputs.value }}'
-          $file = 'src\drvctl\Cli\HelpText.cs'
-          (Get-Content $file -Raw) -replace '<REPLACE\.VERSION>', $tag | Set-Content $file -NoNewline
-
-      - name: Publish Native AOT
-        run: dotnet publish drvctl.csproj -c Release -r win-x64
+          $version = '${{ steps.tag.outputs.version }}'
+          dotnet publish drvctl.csproj -c Release -r win-x64 `
+            -p:Version=$version `
+            -p:InformationalVersion=$tag
 
       - name: Stage and zip artifact
         id: zip

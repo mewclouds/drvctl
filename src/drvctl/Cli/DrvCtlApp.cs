@@ -15,8 +15,22 @@ using DrvCtl.Verification;
 
 namespace DrvCtl.Cli;
 
+/*
+ * The command dispatch table and top-level error handling for every drvctl
+ * command, public and hidden research alike. RunExportAsync and RunList
+ * back the public CLI. The RunInspectInf/RunInspectWim/RunPlanDriver/
+ * RunValidatePlan/RunSimulateApply/RunAnalyzePublication/
+ * RunPrototypePublication/RunPrototypeInjectWim methods below them each back
+ * one hidden research command and print their own raw, technical output
+ * since they have no friendly/verbose split to maintain.
+ */
+
 internal static class DrvCtlApp
 {
+    /// Parses argv, dispatches to the matching command, and converts thrown
+    /// exceptions into the appropriate exit code: UsageException becomes a
+    /// usage error plus general help, CommandHelpException prints
+    /// command-specific help, anything else is reported as a runtime failure.
     internal static async Task<int> RunAsync(
         string[] args
     )
@@ -35,15 +49,9 @@ internal static class DrvCtlApp
             return options switch
             {
                 ExportCommandOptions exportOptions =>
-                    RunExport(
+                    await RunExportAsync(
                         CreateExporter(),
                         exportOptions
-                    ),
-
-                VerifyCommandOptions verifyOptions =>
-                    await RunVerifyAsync(
-                        CreateExporter(),
-                        verifyOptions
                     ),
 
                 ListCommandOptions listOptions =>
@@ -73,10 +81,6 @@ internal static class DrvCtlApp
             {
                 HelpText.PrintExport();
             }
-            else if (help.Command.Equals("verify", StringComparison.OrdinalIgnoreCase))
-            {
-                HelpText.PrintVerify();
-            }
             else
             {
                 HelpText.PrintList();
@@ -99,6 +103,10 @@ internal static class DrvCtlApp
             return ExitCodes.RuntimeFailure;
         }
     }
+
+    // The Run* methods below back hidden research commands (see file
+    // header). None of them are reachable from HelpText or the public
+    // export/list surface.
 
     private static int RunPrototypePublication(PrototypePublicationCommandOptions options)
     {
@@ -447,27 +455,78 @@ internal static class DrvCtlApp
         foreach (string value in values) Console.WriteLine($"  {value}");
     }
 
-    private static int RunExport(
+    // Public command implementations below. These are the only two paths a
+    // supported end user is expected to exercise.
+
+    /// Runs `drvctl export`. Resolves copy concurrency via CopyWorkerPolicy,
+    /// performs the export, prints the friendly/verbose summary, then layers
+    /// on --verify/--full-verify/--dism if requested. --dism additionally
+    /// requires elevation, checked before the export even starts so a
+    /// non-elevated run fails fast instead of after copying gigabytes of driver files.
+    private static async Task<int> RunExportAsync(
         IDriverExporter exporter,
         ExportCommandOptions options
     )
     {
-        int workers =
-            WorkerPolicy.Resolve(
-                options.Workers
+        if (
+            options.ValidationMode == ExportValidationMode.Dism &&
+            !Elevation.IsAdministrator()
+        )
+        {
+            Console.Error.WriteLine();
+            Console.Error.WriteLine(
+                "drvctl export --dism requires an elevated terminal because DISM"
+            );
+            Console.Error.WriteLine(
+                "requires administrative privileges."
             );
 
-        ExportResult result =
-            exporter.Export(
-                new ExportRequest(
-                    options.Destination,
-                    workers
-                )
-            );
+            return ExitCodes.RuntimeFailure;
+        }
+
+        WorkerSelection copyWorkers =
+            CopyWorkerPolicy.Resolve();
+
+        ExportResult result;
+
+        try
+        {
+            result =
+                exporter.Export(
+                    new ExportRequest(
+                        options.Destination,
+                        copyWorkers.Workers,
+                        options.Verbose,
+                        copyWorkers.FromOverride
+                    )
+                );
+        }
+        catch (Exception error)
+        {
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("drvctl export failed:");
+            Console.Error.WriteLine($"  {error.Message}");
+            return ExitCodes.RuntimeFailure;
+        }
+
+        // Quick confidence is metadata-only, so it reuses the same conservative
+        // copy policy. Full/DISM comparisons hash everything and benefit from
+        // much higher parallelism, so they get their own automatic strategy.
+        WorkerSelection? verificationWorkers =
+            options.ValidationMode switch
+            {
+                ExportValidationMode.None => null,
+                ExportValidationMode.Quick => CopyWorkerPolicy.Resolve(),
+                ExportValidationMode.Full or ExportValidationMode.Dism => VerificationWorkerPolicy.Resolve(),
+                _ => null
+            };
 
         ConsoleOutput.PrintExportSummary(
             result,
-            options.Workers.HasValue
+            options.Verbose,
+            copyWorkers,
+            verificationWorkers,
+            validationFollows: options.ValidationMode != ExportValidationMode.None
         );
 
         if (options.Benchmark)
@@ -477,10 +536,175 @@ internal static class DrvCtlApp
             );
         }
 
+        switch (options.ValidationMode)
+        {
+            case ExportValidationMode.None:
+                return ExitCodes.Success;
+
+            case ExportValidationMode.Quick:
+            case ExportValidationMode.Full:
+                return RunSourceVerification(
+                    result,
+                    options,
+                    verificationWorkers!.Value.Workers
+                );
+
+            case ExportValidationMode.Dism:
+                return await RunDismComparisonAsync(
+                    result,
+                    options,
+                    verificationWorkers!.Value.Workers
+                );
+
+            default:
+                throw new InvalidOperationException(
+                    "Unknown export validation mode."
+                );
+        }
+    }
+
+    /// Backs --verify (Quick) and --full-verify (Full): compares the export
+    /// against the Driver Store source it was copied from. Never touches DISM.
+    private static int RunSourceVerification(
+        ExportResult result,
+        ExportCommandOptions options,
+        int verificationWorkers
+    )
+    {
+        VerificationDepth depth =
+            options.ValidationMode == ExportValidationMode.Full
+                ? VerificationDepth.Full
+                : VerificationDepth.Quick;
+
+        string modeLabel =
+            depth == VerificationDepth.Full
+                ? "Expensive confidence"
+                : "Quick confidence";
+
+        string? successFlavor =
+            depth == VerificationDepth.Full
+                ? "Every byte has receipts."
+                : null;
+
+        TreeComparisonResult comparison =
+            new FileTreeVerifier().CompareToSource(
+                result.Destination,
+                result.PackageDirectories,
+                verificationWorkers,
+                depth
+            );
+
+        ConsoleOutput.PrintSourceVerificationResult(
+            comparison,
+            modeLabel,
+            successFlavor,
+            options.Verbose
+        );
+
         Console.WriteLine();
         Console.WriteLine("Done.");
 
-        return ExitCodes.Success;
+        return comparison.ExactMatch
+            ? ExitCodes.Success
+            : ExitCodes.VerificationMismatch;
+    }
+
+    /// Backs --dism: creates a temporary DISM reference export, compares it
+    /// against the already-completed drvctl export, and cleans it up.
+    /// The only path in the whole CLI that calls DISM.
+    private static async Task<int> RunDismComparisonAsync(
+        ExportResult result,
+        ExportCommandOptions options,
+        int verificationWorkers
+    )
+    {
+        Console.WriteLine();
+        Console.WriteLine("Challenging Windows itself: running a temporary DISM export...");
+
+        DismComparisonRunner runner =
+            new(new DismRunner(), new FileTreeVerifier());
+
+        DismComparisonOutcome outcome =
+            await runner.RunAsync(
+                result.Destination,
+                verificationWorkers
+            );
+
+        switch (outcome.Status)
+        {
+            case DismComparisonStatus.NotElevated:
+                Console.Error.WriteLine();
+                Console.Error.WriteLine(
+                    "drvctl export --dism requires an elevated terminal because DISM"
+                );
+                Console.Error.WriteLine(
+                    "requires administrative privileges."
+                );
+                return ExitCodes.RuntimeFailure;
+
+            case DismComparisonStatus.DismFailed:
+                Console.Error.WriteLine();
+                Console.Error.WriteLine(outcome.Message);
+                if (options.Verbose && outcome.DismError is not null)
+                {
+                    PrintDismFailureDetails(outcome.DismError);
+                }
+                return ExitCodes.DismFailure;
+
+            case DismComparisonStatus.Failed:
+                Console.Error.WriteLine();
+                Console.Error.WriteLine($"drvctl export --dism failed: {outcome.Message}");
+                return ExitCodes.RuntimeFailure;
+        }
+
+        TreeComparisonResult comparison =
+            outcome.Comparison!;
+
+        ConsoleOutput.PrintDismComparisonResult(
+            comparison,
+            options.Verbose
+        );
+
+        if (options.Benchmark)
+        {
+            BenchmarkPrinter.PrintComparison(
+                outcome.DismSeconds,
+                result
+            );
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("Done.");
+
+        return comparison.ExactMatch
+            ? ExitCodes.Success
+            : ExitCodes.VerificationMismatch;
+    }
+
+    private static void PrintDismFailureDetails(
+        DismException error
+    )
+    {
+        string output =
+            string.Join(
+                Environment.NewLine,
+                new[]
+                {
+                    error.StandardError.Trim(),
+                    error.StandardOutput.Trim()
+                }
+                .Where(
+                    text => !string.IsNullOrWhiteSpace(text)
+                )
+            );
+
+        if (string.IsNullOrWhiteSpace(output))
+        {
+            return;
+        }
+
+        Console.Error.WriteLine();
+        Console.Error.WriteLine(output);
     }
 
     private static IDriverExporter CreateExporter()
@@ -491,6 +715,10 @@ internal static class DrvCtlApp
         );
     }
 
+    /// Runs `drvctl list`. Resolves published packages (reusing
+    /// CopyWorkerPolicy for the SetupAPI resolution work), applies the
+    /// optional provider/class substring filters, then prints the friendly
+    /// or --verbose view. Never copies files, calls DISM, or verifies anything.
     private static int RunList(
         DriverStoreResolver resolver,
         ListCommandOptions options
@@ -498,119 +726,235 @@ internal static class DrvCtlApp
     {
         DriverStoreResolution resolution =
             resolver.Resolve(
-                WorkerPolicy.Resolve(options.Workers)
+                CopyWorkerPolicy.Resolve().Workers,
+                includeIdentity: true
             );
 
-        const string PublishedInfHeader = "Published INF";
-        const string PackageHeader = "Package";
-        const string StoreInfHeader = "Driver Store INF";
+        IEnumerable<PublishedDriverPackage> filtered =
+            resolution.PublishedPackages;
 
-        int publishedInfWidth =
-            Math.Max(
-                PublishedInfHeader.Length,
-                resolution.PublishedPackages.Max(
-                    package => package.PublishedInfName.Length
-                )
-            );
-
-        int packageWidth =
-            Math.Max(
-                PackageHeader.Length,
-                resolution.PublishedPackages.Max(
-                    package => Path.GetFileName(package.PackageDirectory).Length
-                )
-            );
-
-        Console.WriteLine();
-        Console.WriteLine(
-            $"{PublishedInfHeader.PadRight(publishedInfWidth)}  " +
-            $"{PackageHeader.PadRight(packageWidth)}  {StoreInfHeader}"
-        );
-
-        foreach (PublishedDriverPackage package in resolution.PublishedPackages)
+        if (!string.IsNullOrWhiteSpace(options.ProviderFilter))
         {
-            Console.WriteLine(
-                $"{package.PublishedInfName.PadRight(publishedInfWidth)}  " +
-                $"{Path.GetFileName(package.PackageDirectory).PadRight(packageWidth)}  " +
-                package.StoreInfPath
+            filtered = filtered.Where(
+                package =>
+                    package.Provider is not null &&
+                    package.Provider.Contains(
+                        options.ProviderFilter,
+                        StringComparison.OrdinalIgnoreCase
+                    )
             );
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.ClassFilter))
+        {
+            filtered = filtered.Where(
+                package =>
+                    package.Class is not null &&
+                    package.Class.Contains(
+                        options.ClassFilter,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+            );
+        }
+
+        PublishedDriverPackage[] packages =
+            filtered.ToArray();
+
+        if (packages.Length == 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine(
+                "No published driver packages matched."
+            );
+
+            return ExitCodes.Success;
+        }
+
+        if (options.Verbose)
+        {
+            PrintVerboseList(packages);
+        }
+        else
+        {
+            PrintFriendlyList(packages);
         }
 
         Console.WriteLine();
         Console.WriteLine(
-            $"{resolution.PublishedInfCount} published OEM INF" +
-            (resolution.PublishedInfCount == 1 ? string.Empty : "s")
-        );
-        Console.WriteLine(
-            $"{resolution.PackageDirectories.Length} unique package " +
-            (resolution.PackageDirectories.Length == 1
-                ? "directory"
-                : "directories")
+            $"{packages.Length} published driver package" +
+            (packages.Length == 1 ? string.Empty : "s")
         );
 
         return ExitCodes.Success;
     }
 
-    private static async Task<int> RunVerifyAsync(
-        IDriverExporter exporter,
-        VerifyCommandOptions options
+    private static void PrintFriendlyList(
+        PublishedDriverPackage[] packages
     )
     {
-        int workers =
-            WorkerPolicy.Resolve(
-                options.Workers
-            );
+        const string InfHeader = "INF";
+        const string ProviderHeader = "Provider";
+        const string ClassHeader = "Class";
+        const string VersionHeader = "Version";
+        const string DateHeader = "Date";
+        const string Unknown = "-";
 
-        DismRunner dism =
-            new();
+        string[] versions =
+            [.. packages.Select(package => package.DriverVersion ?? Unknown)];
 
-        FileTreeVerifier verifier =
-            new();
+        string[] dates =
+            [.. packages.Select(package => FormatDriverDate(package.DriverDate))];
 
-        CacheFlusher cacheFlusher =
-            new();
+        int infWidth =
+            Math.Max(InfHeader.Length, packages.Max(package => package.PublishedInfName.Length));
 
-        DismVerificationRunner runner =
-            new(
-                dism,
-                exporter,
-                verifier,
-                cacheFlusher
-            );
+        int providerWidth =
+            Math.Max(ProviderHeader.Length, packages.Max(package => (package.Provider ?? Unknown).Length));
 
-        return await runner.RunAsync(
-            options,
-            workers
+        int classWidth =
+            Math.Max(ClassHeader.Length, packages.Max(package => (package.Class ?? Unknown).Length));
+
+        int versionWidth =
+            Math.Max(VersionHeader.Length, versions.Max(value => value.Length));
+
+        Console.WriteLine();
+        Console.WriteLine(
+            $"{InfHeader.PadRight(infWidth)}  " +
+            $"{ProviderHeader.PadRight(providerWidth)}  " +
+            $"{ClassHeader.PadRight(classWidth)}  " +
+            $"{VersionHeader.PadRight(versionWidth)}  {DateHeader}"
         );
+
+        for (int index = 0; index < packages.Length; index++)
+        {
+            PublishedDriverPackage package = packages[index];
+
+            Console.WriteLine(
+                $"{package.PublishedInfName.PadRight(infWidth)}  " +
+                $"{(package.Provider ?? Unknown).PadRight(providerWidth)}  " +
+                $"{(package.Class ?? Unknown).PadRight(classWidth)}  " +
+                $"{versions[index].PadRight(versionWidth)}  {dates[index]}"
+            );
+        }
+    }
+
+    private static void PrintVerboseList(
+        PublishedDriverPackage[] packages
+    )
+    {
+        const string Unknown = "-";
+
+        foreach (PublishedDriverPackage package in packages)
+        {
+            Console.WriteLine();
+            Console.WriteLine(package.PublishedInfName);
+            Console.WriteLine($"  Provider              : {package.Provider ?? Unknown}");
+            Console.WriteLine($"  Class                 : {package.Class ?? Unknown}");
+            Console.WriteLine($"  ClassGuid             : {package.ClassGuid ?? Unknown}");
+            Console.WriteLine($"  Version               : {package.DriverVersion ?? Unknown}");
+            Console.WriteLine($"  Date                  : {FormatDriverDate(package.DriverDate)}");
+            Console.WriteLine($"  Catalog               : {package.CatalogFile ?? Unknown}");
+            Console.WriteLine($"  Driver Store package  : {Path.GetFileName(package.PackageDirectory)}");
+            Console.WriteLine($"  Driver Store directory: {package.PackageDirectory}");
+            Console.WriteLine($"  Driver Store INF      : {package.StoreInfPath}");
+        }
+    }
+
+    private static string FormatDriverDate(
+        string? rawDate
+    )
+    {
+        if (string.IsNullOrWhiteSpace(rawDate))
+        {
+            return "-";
+        }
+
+        return DateTime.TryParseExact(
+            rawDate,
+            "MM/dd/yyyy",
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.None,
+            out DateTime parsed
+        )
+            ? parsed.ToString("yyyy-MM-dd")
+            : rawDate;
     }
 }
 
-internal static class WorkerPolicy
+/// Automatic concurrency for copy-shaped work (export payload copy, SetupAPI
+/// package resolution). Kept conservative - more logical CPUs does not mean
+/// faster copying, and a small pool was the measured sweet spot.
+internal static class CopyWorkerPolicy
 {
     private const int MinWorkers = 1;
     private const int MaxWorkers = 4;
     private const int LowCoreDivisor = 2;
+    private const string OverrideEnvironmentVariable = "DRVCTL_COPY_WORKERS";
 
-    internal static int Resolve(
-        int? requested
-    )
+    internal static WorkerSelection Resolve()
     {
-        if (requested.HasValue)
+        if (WorkerOverride.TryRead(OverrideEnvironmentVariable, out int overridden))
         {
-            return requested.Value;
+            return new WorkerSelection(overridden, FromOverride: true);
         }
 
         int logicalCpus =
             Environment.ProcessorCount;
 
-        if (logicalCpus > MaxWorkers)
+        int workers =
+            logicalCpus > MaxWorkers
+                ? MaxWorkers
+                : Math.Max(MinWorkers, logicalCpus / LowCoreDivisor);
+
+        return new WorkerSelection(workers, FromOverride: false);
+    }
+}
+
+/// Automatic concurrency for hash-heavy verification (--full-verify, --dism).
+/// Hashing scales with cores much better than copying does, so this is
+/// deliberately independent of CopyWorkerPolicy.
+internal static class VerificationWorkerPolicy
+{
+    private const int MaxWorkers = 32;
+    private const string OverrideEnvironmentVariable = "DRVCTL_VERIFY_WORKERS";
+
+    internal static WorkerSelection Resolve()
+    {
+        if (WorkerOverride.TryRead(OverrideEnvironmentVariable, out int overridden))
         {
-            return MaxWorkers;
+            return new WorkerSelection(overridden, FromOverride: true);
         }
 
-        return Math.Max(
-            MinWorkers,
-            logicalCpus / LowCoreDivisor
-        );
+        int workers =
+            Math.Min(Environment.ProcessorCount, MaxWorkers);
+
+        return new WorkerSelection(workers, FromOverride: false);
+    }
+}
+
+/// Not a public CLI surface. An escape hatch for research/benchmark scripts
+/// that need to force a worker count. Normal users never see or set these.
+internal static class WorkerOverride
+{
+    internal static bool TryRead(
+        string variableName,
+        out int workers
+    )
+    {
+        string? raw =
+            Environment.GetEnvironmentVariable(variableName);
+
+        if (
+            !string.IsNullOrWhiteSpace(raw) &&
+            int.TryParse(raw, out int parsed) &&
+            parsed >= 1
+        )
+        {
+            workers = parsed;
+            return true;
+        }
+
+        workers = 0;
+        return false;
     }
 }

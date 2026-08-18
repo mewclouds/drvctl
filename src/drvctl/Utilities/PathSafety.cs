@@ -1,5 +1,12 @@
+/*
+ * Guardrails for the one destructive input drvctl takes from the user: the
+ * export destination path. Every check here exists because getting it wrong
+ * would either destroy user data or corrupt the running Windows install.
+ */
+
 namespace DrvCtl.Utilities;
 
+/// A validated, safe-to-use export destination.
 internal sealed record DestinationPreflight(
     string Destination,
     string Parent,
@@ -8,6 +15,11 @@ internal sealed record DestinationPreflight(
 
 internal static class PathSafety
 {
+    /// Validates and resolves an export destination path. Rejects filesystem
+    /// roots, paths inside the Windows directory, existing files, and
+    /// non-empty existing directories, then ensures the parent directory
+    /// exists so a later Directory.Move to commit staging can succeed.
+    /// <exception cref="InvalidOperationException">The destination fails any safety check.</exception>
     internal static DestinationPreflight ValidateExportDestination(
         string requestedPath
     )
@@ -102,6 +114,8 @@ internal static class PathSafety
         );
     }
 
+    /// True if <paramref name="child"/> is <paramref name="parent"/> itself
+    /// or a path underneath it, compared case-insensitively as Windows paths are.
     private static bool IsSameOrBelow(
         string child,
         string parent

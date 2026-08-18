@@ -1,9 +1,18 @@
+/*
+ * Shells out to the real dism.exe. This is the only place drvctl calls DISM,
+ * and only `--dism` reaches it - a plain export never touches this file.
+ */
+
 using System.Diagnostics;
 
 namespace DrvCtl.Dism;
 
+/// Runs `dism.exe /Online /Export-Driver` as a child process.
 internal sealed class DismRunner
 {
+    /// Runs a DISM driver export to <paramref name="destination"/>, which must already exist.
+    /// Requires an elevated process. DISM itself enforces that, not this method.
+    /// <exception cref="DismException">dism.exe was not found, could not start, or exited non-zero.</exception>
     internal async Task<DismRunResult> ExportDriversAsync(
         string destination
     )
@@ -95,11 +104,14 @@ internal sealed class DismRunner
     }
 }
 
+/// Outcome of a successful (exit code 0) DISM run.
 internal sealed record DismRunResult(
     int ExitCode,
     double Seconds
 );
 
+/// Thrown when DISM cannot be found, started, or exits non-zero. Carries the
+/// captured stdout/stderr so --verbose can print DISM's own diagnostics.
 internal sealed class DismException(
     int exitCode,
     string message,

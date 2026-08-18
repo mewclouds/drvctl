@@ -1,8 +1,17 @@
+/*
+ * Thin wrapper over libwim (wimlib), a third-party WIM library, rather than
+ * the Windows Imaging API (WIMGAPI). WIMGAPI does not expose the direct
+ * image-mutation operations the research WIM-injection commands need.
+ * Backs the hidden `inspect-wim` and `prototype-inject-wim` research
+ * commands. Not used by the public export/list surface.
+ */
+
 using System.Runtime.InteropServices;
 using DrvCtl.Native;
 
 namespace DrvCtl.Images;
 
+/// Handle to an open WIM file, opened for read or mutation via wimlib.
 internal sealed class WimImage : IDisposable
 {
     private const int ExtractNoAcls = 0x00000040;
@@ -33,6 +42,8 @@ internal sealed class WimImage : IDisposable
     internal int CompressionType { get; }
     internal ulong TotalBytes { get; }
 
+    /// Opens a WIM file and reads its top-level metadata (image count, compression, etc).
+    /// <exception cref="InvalidOperationException">wimlib_open_wim or wimlib_get_wim_info failed.</exception>
     internal static WimImage Open(string path)
     {
         string fullPath = System.IO.Path.GetFullPath(path);
@@ -54,6 +65,7 @@ internal sealed class WimImage : IDisposable
         return new WimImage(fullPath, handle, info);
     }
 
+    /// Reads a single image's name and description (1-based index).
     internal WimImageMetadata InspectImage(int index)
     {
         ObjectDisposedException.ThrowIf(handle.IsClosed, this);
@@ -65,6 +77,10 @@ internal sealed class WimImage : IDisposable
         return new WimImageMetadata(index, ReadString(WimlibNative.GetImageName(handle, index)), ReadString(WimlibNative.GetImageDescription(handle, index)));
     }
 
+    /// Extracts specific WIM-internal paths to a target directory. wimlib's
+    /// path-list extraction only accepts a file on disk, so the requested
+    /// paths are written to a temporary list file next to the target and
+    /// deleted again once extraction finishes.
     internal unsafe void ExtractPaths(int index, string targetDirectory, IReadOnlyList<string> paths)
     {
         ObjectDisposedException.ThrowIf(handle.IsClosed, this);
@@ -92,6 +108,8 @@ internal sealed class WimImage : IDisposable
         }
     }
 
+    /// Stages a filesystem file or directory to be added into the image at
+    /// wimTargetPath. Does not write the WIM itself, that happens on Overwrite.
     internal void AddTree(int index, string fsSourcePath, string wimTargetPath, int addFlags = 0)
     {
         ObjectDisposedException.ThrowIf(handle.IsClosed, this);
@@ -103,6 +121,7 @@ internal sealed class WimImage : IDisposable
         if (result != 0) throw new InvalidOperationException($"wimlib_add_tree failed ({result}): {GetError(result)}");
     }
 
+    /// Commits any staged AddTree calls by rewriting the WIM file in place.
     internal void Overwrite(int writeFlags = 0, uint numThreads = 0)
     {
         ObjectDisposedException.ThrowIf(handle.IsClosed, this);

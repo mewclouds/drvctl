@@ -1,9 +1,16 @@
+/*
+ * --benchmark output only. Kept separate from ConsoleOutput because
+ * performance detail is a distinct concern from friendly/verbose rendering,
+ * gated by its own flag rather than folded into --verbose.
+ */
+
 using DrvCtl.Export;
 
 namespace DrvCtl.Benchmarking;
 
 internal static class BenchmarkPrinter
 {
+    /// Timing and throughput breakdown for a completed export.
     internal static void PrintExport(
         ExportResult result
     )
@@ -32,10 +39,14 @@ internal static class BenchmarkPrinter
         );
     }
 
+    /// drvctl vs DISM timing comparison, shown only with `export --dism --benchmark`.
+    /// Explicitly flags this as a warm-cache comparison since drvctl's own
+    /// export always runs first (see RunExportAsync), then the DISM
+    /// reference export runs second and can benefit from the filesystem
+    /// cache drvctl's run just warmed.
     internal static void PrintComparison(
         double dismSeconds,
-        ExportResult drvctlResult,
-        bool cacheFlushed
+        ExportResult drvctlResult
     )
     {
         Console.WriteLine();
@@ -77,24 +88,11 @@ internal static class BenchmarkPrinter
         }
 
         Console.WriteLine();
-
-        if (cacheFlushed)
-        {
-            Console.WriteLine(
-                "Cache flushes were requested before both exporters."
-            );
-            Console.WriteLine(
-                "This is cache-flushed, not guaranteed fresh-boot cold."
-            );
-        }
-        else
-        {
-            Console.WriteLine(
-                "DISM ran first and can warm filesystem cache for drvctl."
-            );
-            Console.WriteLine(
-                "Use --flush-cache for the cache-flushed comparison."
-            );
-        }
+        Console.WriteLine(
+            "drvctl ran first and can warm filesystem cache for DISM."
+        );
+        Console.WriteLine(
+            "This is not a cold-cache comparison."
+        );
     }
 }

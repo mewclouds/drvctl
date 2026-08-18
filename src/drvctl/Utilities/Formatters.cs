@@ -1,7 +1,10 @@
 namespace DrvCtl.Utilities;
 
+/// Human-friendly value formatting shared across console output.
 internal static class Formatters
 {
+    /// Formats a byte count using binary units (KiB/MiB/GiB), matching the
+    /// units drvctl's own output uses everywhere else.
     internal static string Bytes(
         long bytes
     )

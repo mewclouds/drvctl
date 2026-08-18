@@ -1,9 +1,16 @@
+/*
+ * advapi32.dll declarations for the process-token privilege adjustment
+ * CacheFlusher needs to call SetSystemFileCacheSize.
+ */
+
 using System.Runtime.InteropServices;
 
 namespace DrvCtl.Native;
 
 internal static partial class Advapi32Native
 {
+    /// Mirrors the native LUID struct layout exactly (two 4-byte fields).
+    /// Never constructed by hand, only ever produced by LookupPrivilegeValue.
     [StructLayout(LayoutKind.Sequential)]
     internal struct Luid
     {
@@ -18,6 +25,10 @@ internal static partial class Advapi32Native
         internal uint Attributes;
     }
 
+    /// The real TOKEN_PRIVILEGES struct is variable-length (a PrivilegeCount
+    /// followed by that many LuidAndAttributes entries), but drvctl only ever
+    /// adjusts one privilege at a time, so this fixed single-entry layout is
+    /// sufficient and avoids the marshalling complexity of a trailing array.
     [StructLayout(LayoutKind.Sequential)]
     internal struct TokenPrivileges
     {

@@ -1,3 +1,10 @@
+/*
+ * offreg.dll (Offline Registry Library) declarations, used only by the
+ * research registry-editing commands. Unlike most Win32 APIs, offreg
+ * functions return the Win32 error code as their direct return value
+ * instead of a BOOL plus SetLastError, so none of these use SetLastError.
+ */
+
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
@@ -31,6 +38,8 @@ internal static partial class OffregNative
     internal static partial uint SaveHive(SafeOfflineHiveHandle handle, string path, uint osMajorVersion, uint osMinorVersion);
 }
 
+/// SafeHandle around an open offline hive. Guarantees ORCloseHive runs even
+/// if the owning OfflineRegistryHive is never explicitly disposed.
 internal sealed class SafeOfflineHiveHandle : SafeHandleZeroOrMinusOneIsInvalid
 {
     private SafeOfflineHiveHandle() : base(true) { }
@@ -38,6 +47,7 @@ internal sealed class SafeOfflineHiveHandle : SafeHandleZeroOrMinusOneIsInvalid
     protected override bool ReleaseHandle() => OffregNative.CloseHive(handle) == 0;
 }
 
+/// SafeHandle around an open offline registry key.
 internal sealed class SafeOfflineKeyHandle : SafeHandleZeroOrMinusOneIsInvalid
 {
     private SafeOfflineKeyHandle() : base(true) { }
